@@ -1,171 +1,151 @@
 // ============================================
-// BOOKMARKLET - Парсинг чека Эвотор
+// BOOKMARKLET v2 - Эвотор POPUP
 // ============================================
-// Инструкция:
-// 1. Создай новую закладку в браузере
-// 2. Название: "Эвотор → Таблица"
-// 3. В поле URL вставь код из файла bookmarklet-minified.txt
-// 4. Открой детализацию чека в Эвоторе
-// 5. Нажми на закладку
+// Работает с модальным окном детализации чека
 // ============================================
 
 (function() {
-  // ВАЖНО: Вставь сюда URL твоего Google Apps Script
-  const WEBAPP_URL = 'ВСТАВЬ_СЮДА_URL_GOOGLE_APPS_SCRIPT';
+  const WEBAPP_URL = 'ВСТАВЬ_СЮДА_URL';
 
-  // Функция парсинга чека
   function parseCheck() {
-    const result = {
-      checkNumber: '',
-      date: '',
-      time: '',
-      paymentType: '',
-      checkTotal: 0,
-      items: []
-    };
-
-    // Ищем номер чека (обычно в заголовке или рядом с "Продажа №")
+    const result = { checkNumber: '', date: '', time: '', paymentType: '', checkTotal: 0, items: [] };
     const allText = document.body.innerText;
 
-    // Продажа №
+    console.log('=== ЭВОТОР ПАРСЕР v2 ===');
+
+    // Номер чека
     const saleMatch = allText.match(/Продажа\s*№?\s*(\d+)/i);
-    if (saleMatch) {
-      result.checkNumber = saleMatch[1];
+    if (saleMatch) result.checkNumber = saleMatch[1];
+
+    // Дата и время (19:36 16.12.25)
+    const dtMatch = allText.match(/(\d{1,2}:\d{2})\s+(\d{1,2}\.\d{1,2}\.\d{2,4})/);
+    if (dtMatch) {
+      result.time = dtMatch[1];
+      let d = dtMatch[2];
+      if (d.match(/\.\d{2}$/)) d = d.replace(/(\d{2})$/, '20$1');
+      result.date = d;
     }
 
-    // Дата и время (формат: 19:52 15.12.25 или 15.12.2025 19:52)
-    const dateTimeMatch = allText.match(/(\d{1,2}:\d{2})\s+(\d{1,2}\.\d{1,2}\.\d{2,4})/);
-    if (dateTimeMatch) {
-      result.time = dateTimeMatch[1];
-      let dateStr = dateTimeMatch[2];
-      // Преобразуем 15.12.25 в 15.12.2025
-      if (dateStr.match(/\d{2}\.\d{2}\.\d{2}$/)) {
-        dateStr = dateStr.replace(/(\d{2})$/, '20$1');
-      }
-      result.date = dateStr;
-    }
+    // Оплата
+    result.paymentType = allText.includes('Электронная') ? 'Электронная' :
+                         allText.includes('Наличные') ? 'Наличные' : '?';
 
-    // Вид оплаты
-    if (allText.includes('Электронная')) {
-      result.paymentType = 'Электронная';
-    } else if (allText.includes('Наличные')) {
-      result.paymentType = 'Наличные';
-    } else {
-      result.paymentType = 'Неизвестно';
-    }
-
-    // Итого чека
+    // Итого
     const totalMatch = allText.match(/Итого[:\s]*(\d[\d\s]*[,\.]\d{2})/i);
     if (totalMatch) {
       result.checkTotal = parseFloat(totalMatch[1].replace(/\s/g, '').replace(',', '.'));
     }
 
-    // Парсим таблицу товаров
-    const tables = document.querySelectorAll('table');
-    tables.forEach(table => {
-      const rows = table.querySelectorAll('tr');
-      rows.forEach((row, index) => {
-        if (index === 0) return; // Пропускаем заголовок
+    // === ПАРСИНГ ТОВАРОВ ===
+    const lines = allText.split('\n').map(l => l.trim()).filter(l => l);
 
-        const cells = row.querySelectorAll('td');
-        if (cells.length >= 4) {
-          const itemName = cells[0]?.innerText?.trim() || '';
-          const priceText = cells[1]?.innerText?.trim() || '0';
-          const qtyText = cells[2]?.innerText?.trim() || '1';
-          const discountText = cells[3]?.innerText?.trim() || '0';
-          const totalText = cells[4]?.innerText?.trim() || priceText;
+    console.log('Все строки:', lines);
 
-          if (itemName && !itemName.includes('Наименование')) {
+    // Находим заголовок таблицы товаров
+    let startIdx = -1;
+    let endIdx = lines.length;
+
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes('Наименование товара')) {
+        startIdx = i;
+      }
+      if (startIdx !== -1 && (lines[i].includes('Промежуточный итог') || lines[i].match(/^Итого:/))) {
+        endIdx = i;
+        break;
+      }
+    }
+
+    console.log('Диапазон:', startIdx, '-', endIdx);
+
+    if (startIdx !== -1) {
+      let i = startIdx + 1;
+
+      while (i < endIdx) {
+        const line = lines[i];
+
+        // Пропускаем заголовки колонок
+        if (!line || line.includes('Цена') || line.includes('Кол-во') || line.includes('Скидка на позицию')) {
+          i++;
+          continue;
+        }
+
+        // Если строка содержит буквы и не начинается с цифры - это название товара
+        if (/[а-яА-ЯёЁa-zA-Z]/.test(line) && !/^\d/.test(line)) {
+          const itemName = line;
+
+          // Следующие строки: цена, кол-во, скидка, стоимость
+          const price = lines[i + 1] || '0';
+          const qty = lines[i + 2] || '1';
+          const discount = lines[i + 3] || '0';
+          const itemTotal = lines[i + 4] || price;
+
+          console.log('Товар:', itemName, '| Цена:', price, '| Кол-во:', qty, '| Скидка:', discount, '| Итого:', itemTotal);
+
+          // Проверяем что цена - это число
+          if (/\d/.test(price) && !price.includes('Цена') && !price.includes('шт')) {
             result.items.push({
               name: itemName,
-              unitPrice: parseFloat(priceText.replace(/[^\d,.-]/g, '').replace(',', '.')) || 0,
-              qty: parseInt(qtyText.replace(/[^\d]/g, '')) || 1,
-              discount: parseFloat(discountText.replace(/[^\d,.-]/g, '').replace(',', '.')) || 0,
-              itemTotal: parseFloat(totalText.replace(/[^\d,.-]/g, '').replace(',', '.')) || 0
+              unitPrice: parseFloat(price.replace(/[^\d,.-]/g, '').replace(',', '.')) || 0,
+              qty: parseInt(qty.replace(/[^\d]/g, '')) || 1,
+              discount: parseFloat(discount.replace(/[^\d,.-]/g, '').replace(',', '.')) || 0,
+              itemTotal: parseFloat(itemTotal.replace(/[^\d,.-]/g, '').replace(',', '.')) || 0
             });
+            i += 5;
+          } else {
+            i++;
           }
+        } else {
+          i++;
         }
-      });
-    });
-
-    // Если таблицу не нашли, пробуем искать div'ы с товарами
-    if (result.items.length === 0) {
-      // Ищем строки с ценами
-      const allElements = document.querySelectorAll('div, span, p');
-      let currentItem = null;
-
-      allElements.forEach(el => {
-        const text = el.innerText?.trim();
-        if (!text) return;
-
-        // Ищем паттерн цены: 280,00
-        const pricePattern = /^(\d+[,\.]\d{2})$/;
-        const qtyPattern = /^(\d+)\s*шт/;
-
-        // Это очень упрощённый парсинг, может потребовать доработки
-      });
+      }
     }
+
+    console.log('Найдено товаров:', result.items.length);
+    console.log('Товары:', result.items);
 
     return result;
   }
 
-  // Функция отправки данных
-  async function sendData(checkData) {
-    const rows = checkData.items.map(item => ({
-      date: checkData.date,
-      time: checkData.time,
-      checkNumber: checkData.checkNumber,
+  async function sendData(data) {
+    const rows = data.items.map(item => ({
+      date: data.date,
+      time: data.time,
+      checkNumber: data.checkNumber,
       itemName: item.name,
-      volume: '-', // Объём обычно в названии товара
+      volume: '-',
       qty: item.qty,
       unitPrice: item.unitPrice,
       discount: item.discount,
       itemTotal: item.itemTotal,
-      checkTotal: checkData.checkTotal,
-      paymentType: checkData.paymentType
+      checkTotal: data.checkTotal,
+      paymentType: data.paymentType
     }));
 
     if (rows.length === 0) {
-      alert('Не найдено товаров в чеке!\n\nПопробуй открыть детализацию чека и нажать снова.');
+      alert(`Товары не найдены!\n\nЧек #${data.checkNumber}\nДата: ${data.date} ${data.time}\nИтого: ${data.checkTotal}₽\n\nОткрой F12 → Console для деталей`);
       return;
     }
 
-    // Показываем что нашли
-    const preview = rows.map(r =>
-      `${r.itemName}: ${r.unitPrice}₽ x ${r.qty} = ${r.itemTotal}₽`
-    ).join('\n');
+    const preview = rows.map(r => `• ${r.itemName}: ${r.itemTotal}₽`).join('\n');
 
-    const confirm = window.confirm(
-      `Найдено ${rows.length} позиций:\n\n${preview}\n\nОтправить в таблицу?`
-    );
-
-    if (!confirm) return;
+    if (!confirm(`Чек #${data.checkNumber}\n${data.date} ${data.time}\n\n${preview}\n\nИтого: ${data.checkTotal}₽\n\nОтправить?`)) return;
 
     try {
-      const response = await fetch(WEBAPP_URL, {
+      await fetch(WEBAPP_URL, {
         method: 'POST',
-        mode: 'no-cors', // Для обхода CORS
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        mode: 'no-cors',
         body: JSON.stringify({ rows })
       });
-
-      alert('Данные отправлены! Проверь таблицу.');
-    } catch (error) {
-      alert('Ошибка отправки: ' + error.message);
+      alert('Отправлено!');
+    } catch (e) {
+      alert('Ошибка: ' + e);
     }
   }
 
-  // Запускаем
-  const checkData = parseCheck();
-
-  if (!checkData.checkNumber) {
-    alert('Не удалось найти номер чека.\n\nУбедись что открыта страница детализации чека.');
+  const data = parseCheck();
+  if (!data.checkNumber) {
+    alert('Чек не найден! Открой детализацию чека.');
     return;
   }
-
-  console.log('Parsed check data:', checkData);
-  sendData(checkData);
-
+  sendData(data);
 })();
